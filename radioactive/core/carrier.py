@@ -1,61 +1,46 @@
 """
-载波管理器（CarrierManager）— w_u 归属驱动 + 经验 H₀ 校准
-=============================================================
+载波管理器（CarrierManager）— per-image t-test 检测
+=====================================================
 
-理论基础（审稿人可手推，所有定理均有文献原型）
+核心改进（相对于 cosine 版本）：
+  旧版：cos(φ'_mean, w_u) / ‖φ'_mean‖  → 被 ‖φ'_mean‖ 稀释信号
+  新版：t_u = mean(⟨φ_i − μ, w_u⟩) / SE  → 标准 t 检验，√N 放大
+
+理论基础：
 ═══════════════════════════════════════════════════════════
 
-**核心洞察：w₀（第一主成分）捕获的是干净图像共有结构，
-  不适合做检测统计量；w_u（次要主成分空间）对干净图近似各向同性，
-  适合做 Sablayrolles 式 p-value 检测。**
+**定理 F' (Neyman-Pearson t-检验，本文修正):**
 
-  实验证据（benchmark 结果）：
-    · 干净图 cos(w₀) ≈ 0.69  →  Sablayrolles p ≈ 0  →  FPR 失控
-    · 干净图 cos(w_u) ≈ 0     →  Sablayrolles p ≈ 1  →  FPR 可控
+  对 N 张测试图像 {x_i}，定义逐图投影：
+    p_i^u = ⟨λ(x_i) − μ_clean, w_u⟩
 
-  理论解释：
-    · w₀ = v₁（第一主成分），解释 40%+ 方差
-    · w_u ⊥ w₀，在次要主成分空间内，解释方差 << 2%
-    · 干净图在 w_u 方向近似各向同性 → 满足 Sablayrolles 的 H₀ 假设
+  H₀：E[p_i^u] = 0  （图像拓扑与 w_u 无关）
+  H₁：E[p_i^u] > 0  （图像拓扑沿 w_u 偏移）
 
-**定理 F (Sablayrolles et al., ICML 2020 §3.1):**
+  检验统计量：t_u = mean(p_i^u) / (std(p_i^u) / √N)
 
-  P(cos(w_u, φ'_mean) ≥ τ | H₀) = ½ I_{1−τ²}((d−1)/2, 1/2)
+  在 H₀ 下：t_u ~ t(N−1) ≈ N(0,1)（CLT, Lehmann & Romano 2005 §5.1）
+  在 H₁ 下：t_u >> 0，功效 ∝ √N · (信号/噪声)
 
-  此公式对 w_u 有效（干净图在 w_u 方向近似各向同性），
-  对 w₀ 无效（干净图在 w₀ 方向有系统性偏移）。
+  用户归属：û = argmax_u t_u
+  检测判据：max_u t_u > τ_emp（bootstrap 经验阈值）
+  或 Bonferroni: min_u p_u^{t-test} < α/U
 
-**命题 10 (本文 — 修正版):**
+**优势（相对 cosine 检测）：**
+  · 不除以 ‖φ'_mean‖ → 避免高维均值范数稀释信号
+  · 功效 ∝ √N → 更多图像 = 更强检测力
+  · t-test 对非正态投影分布鲁棒（CLT）
 
-  (a) w₀ = v₁ / ‖v₁‖  — 保留用于分析，不用于检测判决
-
-  (b) w_u ⊥ w₀，从 v₂...v_r 子空间生成 + Gram-Schmidt 正交化
-
-  (c) 生成时选择准则（仅 w_u）：
-        i* = argmax_i ⟨λ_i − μ, w_u⟩
-      理由：w₀ 方向信号被干净图共性淹没，仅优化 w_u 归属信号
-
-  (d) 检测（Bonferroni + 经验 H₀）：
-      对每用户 u：T_u = cos(φ'_mean, w_u)，p_u = cosine_p_value(T_u, d)
-      Bonferroni：reject H₀ if min_u p_u < α / U
-      [Lehmann & Romano 2005, §9.1]
-
-      经验 H₀（可选，Efron 2004）：
-        从干净基线 bootstrap max_u cos → 阈值 τ_emp
-        reject if max_u T_u > τ_emp
-        — 不依赖分布假设，对非各向同性也鲁棒
-
-  (e) LDA 精炼（可选，Fisher 1936）：
-      用已标注数据计算类间/类内散度比，求判别方向，
-      替换 PCA 载波为判别性更强的 LDA 载波。
+**命题 10 (本文):**
+  (a)-(c) 同前（w₀ + w_u 生成 + Gram-Schmidt + 选择）
+  (d) 检测改用逐图 t-test（见上）
 
 参考文献：
   [1] Sablayrolles et al. "Radioactive data." ICML 2020.
-  [2] Jolliffe. "Principal Component Analysis." Springer 2002.
-  [3] Lehmann & Romano. "Testing Statistical Hypotheses." Springer 2005.
-  [4] Efron. "Large-Scale Simultaneous Hypothesis Testing." JASA 2004.
-  [5] Fisher. "The Use of Multiple Measurements in Taxonomic Problems."
-      Annals of Eugenics 1936.
+  [2] Lehmann & Romano. "Testing Statistical Hypotheses." Springer 2005.
+  [3] Efron. "Large-Scale Simultaneous Hypothesis Testing." JASA 2004.
+  [4] Fisher. "The Use of Multiple Measurements." Ann. Eugenics 1936.
+  [5] Jolliffe. "Principal Component Analysis." Springer 2002.
 """
 from __future__ import annotations
 
@@ -65,11 +50,12 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from scipy.special import betainc
+from scipy import stats as sp_stats
 
 
 class CarrierManager:
     """
-    载波管理器：w_u 归属驱动选择 + Bonferroni/经验 H₀ 检测。
+    载波管理器：PCA 校准 → 正交化 w_u → per-image t-test 检测。
     """
 
     def __init__(
@@ -89,6 +75,7 @@ class CarrierManager:
         self.w0: Optional[np.ndarray] = None
         self.carriers: Optional[np.ndarray] = None
         self._calibrated = False
+        self.boot_quantile: float = 0.95
 
     # ═══ 1. PCA 校准 ═════════════════════════════════════════
 
@@ -131,16 +118,13 @@ class CarrierManager:
         verbose: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        命题 10(a)(b)：w₀ + 正交化 w_u 生成。
-
-        Returns: (w0, carriers)
+        命题 10(a)(b)：w₀ + 正交化 w_u。
         """
         if not self._calibrated:
             raise RuntimeError("Must call calibrate() first")
 
         U = num_users or self.num_users
         r = self.components.shape[0]
-        d = self.components.shape[1]
 
         self.w0 = self.components[0].copy()
         self.w0 /= np.linalg.norm(self.w0)
@@ -213,20 +197,11 @@ class CarrierManager:
         user_id: int,
     ) -> Tuple[int, float, float]:
         """
-        w_u 归属驱动选择（命题 10(c) 修正版）：
+        w_u 归属驱动选择（命题 10(c)）：
 
           i* = argmax_i ⟨λ_i − μ, w_u⟩
 
-        仅优化用户归属信号。w₀ 投影仅记录，不参与选择。
-
-        理由（基于实验 + 理论）：
-          · w₀ 投影量级 >> w_u 投影量级（~10-100x）
-          · 联合选择 score = proj(w₀) + proj(w_u) 被 w₀ 主导
-          · w_u 信号被淹没 → 用户不可分
-          · 仅优化 w_u → 全部选择压力集中于归属信号
-
-        Returns:
-            (best_idx, proj_wu, proj_w0)
+        Returns: (best_idx, proj_wu, proj_w0)
         """
         if self.carriers is None:
             raise RuntimeError("Must call generate_carriers() first")
@@ -250,14 +225,11 @@ class CarrierManager:
 
         return best_idx, best_pu, best_p0
 
-    # ═══ 4. 检测 ═════════════════════════════════════════════
+    # ═══ 4. Per-image t-test 检测 ═════════════════════════════
 
     @staticmethod
     def cosine_p_value(cos_sim: float, dim: int) -> float:
-        """
-        Sablayrolles (ICML 2020) §3.1:
-        P(cos ≥ τ | H₀) = ½ I_{1−τ²}((d−1)/2, 1/2)
-        """
+        """Sablayrolles (ICML 2020) §3.1: P(cos >= tau | H0)."""
         if cos_sim <= 0:
             return 1.0
         tau_sq = min(cos_sim ** 2, 1.0 - 1e-15)
@@ -265,42 +237,48 @@ class CarrierManager:
         b = 0.5
         return 0.5 * float(betainc(a, b, 1.0 - tau_sq))
 
-    def _bootstrap_null_threshold(
+    def _bootstrap_null_threshold_t(
         self,
         clean_vectors: np.ndarray,
-        batch_size: int = 8,
-        n_bootstrap: int = 1000,
-        quantile: float = 0.99,
+        batch_size: int = 50,
+        n_bootstrap: int = 2000,
+        quantile: float = 0.95,
     ) -> float:
         """
-        经验 H₀ 阈值（Efron 2004）。
+        经验 H₀ 阈值 — 基于 per-image t-test（Efron 2004）。
 
-        Bootstrap 干净数据的 max_u cos(batch_mean, w_u) 分布，
-        取 quantile 分位数作为检测阈值。
+        Bootstrap 干净数据的 max_u t_u 分布，取 quantile 分位数。
 
-        此方法不依赖分布假设，对 w_u 方向的非各向同性也鲁棒。
+        与 cosine 版本的区别：
+          cosine: max_u cos(batch_mean, w_u)    → 被 ||mean|| 稀释
+          t-test: max_u mean(proj) / SE(proj)   → 标准化，不受 ||mean|| 影响
         """
         vecs = np.asarray(clean_vectors, dtype=np.float64)
-        N = len(vecs)
+        N_clean = len(vecs)
         centered = vecs - self.mu_clean
-        bs = min(batch_size, N)
+        bs = min(batch_size, N_clean)
         U = len(self.carriers)
+
+        carrier_matrix = np.stack(self.carriers)  # (U, d)
 
         rng = np.random.default_rng(42)
         null_stats = []
 
         for _ in range(n_bootstrap):
-            idx = rng.choice(N, size=bs, replace=True)
-            batch_mean = centered[idx].mean(axis=0)
-            batch_norm = np.linalg.norm(batch_mean)
-            if batch_norm < 1e-12:
-                null_stats.append(0.0)
-                continue
-            max_cos = max(
-                float(np.dot(batch_mean, self.carriers[u])) / batch_norm
-                for u in range(U)
-            )
-            null_stats.append(max_cos)
+            idx = rng.choice(N_clean, size=bs, replace=True)
+            batch = centered[idx]  # (bs, d)
+            all_proj = batch @ carrier_matrix.T  # (bs, U)
+
+            max_t = -np.inf
+            for u in range(U):
+                proj_u = all_proj[:, u]
+                mean_p = proj_u.mean()
+                std_p = proj_u.std(ddof=1) if bs > 1 else 1.0
+                se = std_p / np.sqrt(bs)
+                t_val = mean_p / (se + 1e-12)
+                if t_val > max_t:
+                    max_t = t_val
+            null_stats.append(max_t)
 
         return float(np.quantile(null_stats, quantile))
 
@@ -311,22 +289,16 @@ class CarrierManager:
         clean_baseline: Optional[np.ndarray] = None,
     ) -> Dict[str, object]:
         """
-        w_u 归属驱动检测（命题 10(d) 修正版）：
+        Per-image t-test 检测（定理 F' + Bonferroni + 经验 H₀）。
 
-        分析路径（Sablayrolles ICML 2020 + Bonferroni [Lehmann & Romano 2005]）：
-          对每用户 u：p_u = cosine_p_value(cos(φ'_mean, w_u), d)
-          Reject H₀ if min_u p_u < α / U
+        核心改进：用逐图投影的 t 检验替代 batch cosine。
 
-        经验路径（Efron 2004, 若提供 clean_baseline）：
-          Bootstrap max_u cos from clean → threshold τ_emp
-          Reject H₀ if max_u cos(φ'_mean, w_u) > τ_emp
+        对每用户 u：
+          proj_i^u = ⟨φ_i − μ, w_u⟩  （逐图投影）
+          t_u = mean(proj_i^u) / SE(proj_i^u)  （t 统计量）
 
-        判定逻辑：
-          若有 clean_baseline → 用经验阈值（更鲁棒）
-          否则 → 用 Bonferroni 分析阈值
-
-        Returns:
-            dict with detection result and diagnostics
+        判据（经验 H₀）：max_u t_u > τ_emp  [Efron 2004]
+        判据（Bonferroni）：min_u p_u < α/U  [Lehmann & Romano 2005]
         """
         if self.carriers is None or self.mu_clean is None:
             raise RuntimeError("Not calibrated / carriers not generated")
@@ -336,48 +308,131 @@ class CarrierManager:
         N = len(vecs)
         U = len(self.carriers)
         centered = vecs - self.mu_clean
+
         mean_cent = centered.mean(axis=0)
         mean_norm = np.linalg.norm(mean_cent)
-
         cos_w0 = float(np.dot(mean_cent, self.w0)) / (mean_norm + 1e-12) if self.w0 is not None else 0.0
+
+        carrier_matrix = np.stack(self.carriers)  # (U, d)
+        all_proj = centered @ carrier_matrix.T   # (N, U)
 
         user_scores = {}
         best_user = 0
+        best_t = -np.inf
         best_cos = -np.inf
-        min_p = 1.0
+        min_p_sab = 1.0
 
         for uid in range(U):
+            proj_u = all_proj[:, uid]
+            mean_proj = float(proj_u.mean())
+            std_proj = float(proj_u.std(ddof=1)) if N > 1 else 1.0
+            se = std_proj / np.sqrt(N)
+            t_u = mean_proj / (se + 1e-12)
+            p_t = float(1.0 - sp_stats.t.cdf(t_u, N - 1)) if N > 1 else 1.0
+
             cos_u = float(np.dot(mean_cent, self.carriers[uid])) / (mean_norm + 1e-12)
-            p_u = self.cosine_p_value(cos_u, d)
-            user_scores[uid] = {"cosine": cos_u, "p_value": p_u}
-            if cos_u > best_cos:
-                best_cos = cos_u
+            p_sab = self.cosine_p_value(cos_u, d)
+
+            user_scores[uid] = {
+                "cosine": cos_u, "p_sablayrolles": p_sab,
+                "t_stat": t_u, "p_ttest": p_t,
+                "mean_proj": mean_proj, "se": se,
+            }
+            if t_u > best_t:
+                best_t = t_u
                 best_user = uid
-            min_p = min(min_p, p_u)
+            best_cos = max(best_cos, cos_u)
+            min_p_sab = min(min_p_sab, p_sab)
 
-        bonferroni_wm = min_p < alpha / U
+        bonferroni_t_wm = any(
+            s["p_ttest"] < alpha / U for s in user_scores.values()
+        )
+
         emp_threshold = None
-
         if clean_baseline is not None and len(clean_baseline) >= 5:
-            emp_threshold = self._bootstrap_null_threshold(
-                clean_baseline, batch_size=N, n_bootstrap=1000, quantile=0.99,
+            emp_threshold = self._bootstrap_null_threshold_t(
+                clean_baseline,
+                batch_size=N,
+                n_bootstrap=2000,
+                quantile=self.boot_quantile,
             )
-            is_wm = best_cos > emp_threshold
+            is_wm = best_t > emp_threshold
         else:
-            is_wm = bonferroni_wm
+            is_wm = bonferroni_t_wm
 
         return {
             "is_watermarked": is_wm,
             "attributed_user": best_user if is_wm else None,
             "best_cos_wu": best_cos,
-            "min_p_wu": min_p,
-            "bonferroni_wm": bonferroni_wm,
+            "best_t_wu": best_t,
+            "min_p_wu": min_p_sab,
+            "bonferroni_t_wm": bonferroni_t_wm,
             "cos_w0": cos_w0,
             "user_scores": user_scores,
             "empirical_threshold": emp_threshold,
         }
 
-    # ═══ 5. LDA 精炼 ═════════════════════════════════════════
+    # ═══ 5. 两层检测协议 ═══════════════════════════════════════
+
+    def detect_model_level(
+        self,
+        test_vectors: np.ndarray,
+        alpha: float = 0.01,
+        clean_baseline: Optional[np.ndarray] = None,
+    ) -> Dict[str, object]:
+        """
+        Layer 1: Model Detection — "Was this model trained on watermarked data?"
+
+        Protocol (Theorem F', Layer 1):
+          T_model = max_u t_u
+          Under H0: T_model follows the maximum of U independent t(N-1) distributions
+          Under H1: at least one t_u >> 0 ⟹ T_model >> threshold
+          Decision: T_model > τ_emp → model is watermarked
+
+        Reference: Sablayrolles ICML 2020 §3 + Bonferroni (Lehmann & Romano 2005 §9.1)
+        """
+        result = self.detect_two_stage(test_vectors, alpha, clean_baseline)
+        min_p = min(s["p_ttest"] for s in result["user_scores"].values())
+        return {
+            "is_watermarked": result["is_watermarked"],
+            "test_statistic": result["best_t_wu"],
+            "threshold": result.get("empirical_threshold"),
+            "p_value": min_p,
+        }
+
+    def detect_user_level(
+        self,
+        test_vectors: np.ndarray,
+        alpha: float = 0.01,
+        clean_baseline: Optional[np.ndarray] = None,
+    ) -> Dict[str, object]:
+        """
+        Layer 2: User Attribution — "Which user's watermarked data was used?"
+
+        Protocol (Theorem F', Layer 2):
+          û = argmax_u t_u
+          Under H1 with true user u*: E[t_{u*}] >> 0, E[t_v] ≈ 0 for v ≠ u*
+          ⟹ argmax_u t_u = u* with high probability
+          Confidence = t_{û} − max_{v≠û} t_v (decision margin)
+
+        Reference: Fisher 1936 (LDA principle applied to carrier space)
+        """
+        result = self.detect_two_stage(test_vectors, alpha, clean_baseline)
+        user_t = {uid: s["t_stat"] for uid, s in result["user_scores"].items()}
+        best = result["attributed_user"]
+        if best is not None:
+            second_best = max(t for uid, t in user_t.items() if uid != best)
+            margin = user_t[best] - second_best
+        else:
+            margin = 0.0
+        return {
+            "attributed_user": result["attributed_user"],
+            "user_t_stats": user_t,
+            "confidence": result["best_t_wu"],
+            "margin": margin,
+        }
+
+    # ═══ 6. LDA 精炼 ═════════════════════════════════════════
 
     def refine_carriers_lda(
         self,
@@ -387,20 +442,6 @@ class CarrierManager:
     ) -> np.ndarray:
         """
         LDA 精炼（Fisher 1936）：用判别方向替换 PCA 载波。
-
-        在 PCA 子空间内做 LDA（避免 d >> N 的奇异性）：
-          1. 投影到 PCA 空间：X_pca = (X − μ) @ V_r^T  ∈ R^{N×r}
-          2. 计算类间散度 S_b 和类内散度 S_w
-          3. 求解 S_w^{-1} S_b v = λ v
-          4. 取前 min(C−1, U) 个特征向量映射回原空间
-          5. Gram-Schmidt 正交化 + 投影掉 w₀
-
-        Args:
-            labeled_vectors: (N, d) 拓扑向量
-            labels: (N,) 用户 ID
-
-        Returns:
-            new carriers (U, d)
         """
         if not self._calibrated:
             raise RuntimeError("Must calibrate first")
@@ -464,7 +505,6 @@ class CarrierManager:
                 if norm > 1e-10:
                     new_carriers[i] /= norm
 
-        old_carriers = self.carriers.copy()
         self.carriers = new_carriers
 
         if verbose:
@@ -476,7 +516,7 @@ class CarrierManager:
 
         return new_carriers
 
-    # ═══ 6. 持久化 ═══════════════════════════════════════════
+    # ═══ 7. 持久化 ═══════════════════════════════════════════
 
     def save(self, path: str):
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)

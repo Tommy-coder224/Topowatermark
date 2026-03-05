@@ -286,7 +286,7 @@ class RadioactiveDetector:
         return DetectionResult(
             is_radioactive=result["is_watermarked"],
             p_value=result["min_p_wu"],
-            test_statistic=result["best_cos_wu"],
+            test_statistic=result.get("best_t_wu", result["best_cos_wu"]),
             threshold=result.get("empirical_threshold") or self.fpr,
             attributed_user=result["attributed_user"],
             user_scores=user_scores_cos,
